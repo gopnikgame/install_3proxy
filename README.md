@@ -30,11 +30,7 @@
 ## Установка
 
 ```bash
-wget https://raw.githubusercontent.com/USERNAME/REPO/main/3proxy-manager.sh
-
-chmod +x 3proxy-manager.sh
-
-sudo ./3proxy-manager.sh
+wget https://raw.githubusercontent.com/USERNAME/REPO/main/3proxy-manager.sh && chmod +x 3proxy-manager.sh && sudo ./3proxy-manager.sh
 ```
 
 ---
