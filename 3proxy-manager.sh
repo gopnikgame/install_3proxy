@@ -53,7 +53,7 @@ ask_free_port() {
     fi
 
     if port_is_busy "$selected_port"; then
-      echo "Порт $selected_port уже занят. Его использовать нельзя."
+      echo "Порт $selected_port уже занят."
       show_busy_ports
       continue
     fi
@@ -65,7 +65,13 @@ ask_free_port() {
 
 install_dependencies() {
   apt update
-  apt install -y build-essential git curl ufw iproute2
+  apt install -y \
+    build-essential \
+    git \
+    curl \
+    ufw \
+    iproute2 \
+    openssl
 }
 
 install_3proxy_binary() {
@@ -159,13 +165,53 @@ get_current_ports() {
   fi
 }
 
+generate_credentials() {
+  PROXY_USER="proxy_$(openssl rand -hex 3)"
+  PROXY_PASS="$(openssl rand -base64 24 | tr -d '=+/')"
+
+  echo
+  echo "Сгенерированы учетные данные:"
+  echo "Логин : $PROXY_USER"
+  echo "Пароль: $PROXY_PASS"
+  echo
+}
+
+manual_credentials() {
+  read -rp "Логин прокси [$DEFAULT_USER]: " PROXY_USER
+  PROXY_USER="${PROXY_USER:-$DEFAULT_USER}"
+
+  while true; do
+    read -rsp "Пароль прокси: " PROXY_PASS
+    echo
+
+    if [[ -n "$PROXY_PASS" ]]; then
+      break
+    fi
+
+    echo "Пароль не может быть пустым."
+  done
+}
+
+setup_credentials() {
+  read -rp "Сгенерировать логин/пароль автоматически? [Y/n]: " gen_creds
+  gen_creds="${gen_creds:-Y}"
+
+  if [[ "$gen_creds" =~ ^[YyДд]$ ]]; then
+    generate_credentials
+  else
+    manual_credentials
+  fi
+}
+
 install_or_reconfigure() {
   echo
-  echo "=== Установка/перенастройка 3proxy ==="
+  echo "=== Установка / перенастройка 3proxy ==="
 
   if systemctl list-unit-files | grep -q "^${SERVICE_NAME}.service"; then
     echo "Обнаружен установленный 3proxy."
+
     read -rp "Перенастроить его? [y/N]: " confirm
+
     if [[ ! "$confirm" =~ ^[YyДд]$ ]]; then
       echo "Отменено."
       exit 0
@@ -176,17 +222,7 @@ install_or_reconfigure() {
 
   show_busy_ports
 
-  read -rp "Логин прокси [$DEFAULT_USER]: " PROXY_USER
-  PROXY_USER="${PROXY_USER:-$DEFAULT_USER}"
-
-  while true; do
-    read -rsp "Пароль прокси: " PROXY_PASS
-    echo
-    if [[ -n "$PROXY_PASS" ]]; then
-      break
-    fi
-    echo "Пароль не может быть пустым."
-  done
+  setup_credentials
 
   HTTP_PORT="$(ask_free_port "HTTP proxy" "$DEFAULT_HTTP_PORT")"
   SOCKS_PORT="$(ask_free_port "SOCKS5 proxy" "$DEFAULT_SOCKS_PORT")"
@@ -210,31 +246,32 @@ install_or_reconfigure() {
   SERVER_IP="$(curl -4 -s ifconfig.me || hostname -I | awk '{print $1}')"
 
   echo
-  echo "Готово."
+  echo "===================================="
+  echo "3proxy успешно установлен"
+  echo "===================================="
   echo
-  echo "HTTP proxy:"
+
+  echo "HTTP Proxy:"
   echo "http://${PROXY_USER}:${PROXY_PASS}@${SERVER_IP}:${HTTP_PORT}"
   echo
-  echo "SOCKS5 proxy:"
+
+  echo "SOCKS5 Proxy:"
   echo "socks5://${PROXY_USER}:${PROXY_PASS}@${SERVER_IP}:${SOCKS_PORT}"
   echo
+
   echo "Проверка:"
   echo "curl -x http://${PROXY_USER}:${PROXY_PASS}@${SERVER_IP}:${HTTP_PORT} https://api.ipify.org"
+  echo
 }
 
 remove_3proxy() {
   echo
   echo "=== Удаление 3proxy ==="
 
-  if [[ -f "$CFG_PATH" ]]; then
-    echo "Найдены текущие порты:"
-    CURRENT_PORTS="$(get_current_ports)"
-    echo "$CURRENT_PORTS"
-  else
-    CURRENT_PORTS=""
-  fi
+  CURRENT_PORTS="$(get_current_ports || true)"
 
-  read -rp "Удалить 3proxy, конфиг и systemd-сервис? [y/N]: " confirm
+  read -rp "Удалить 3proxy? [y/N]: " confirm
+
   if [[ ! "$confirm" =~ ^[YyДд]$ ]]; then
     echo "Отменено."
     exit 0
@@ -244,6 +281,7 @@ remove_3proxy() {
   systemctl disable "$SERVICE_NAME" || true
 
   rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+
   systemctl daemon-reload
 
   rm -rf "$CFG_DIR"
@@ -251,48 +289,65 @@ remove_3proxy() {
   rm -f "$BIN_PATH"
 
   if [[ -n "${CURRENT_PORTS:-}" ]]; then
-    read -rp "Удалить правила UFW для старых портов? [y/N]: " remove_ufw
-    if [[ "$remove_ufw" =~ ^[YyДд]$ ]]; then
+    read -rp "Удалить правила UFW? [y/N]: " remove_fw
+
+    if [[ "$remove_fw" =~ ^[YyДд]$ ]]; then
       for port in $CURRENT_PORTS; do
         remove_ufw_port "$port"
       done
     fi
   fi
 
+  echo
   echo "3proxy удален."
+  echo
 }
 
 status_3proxy() {
   echo
   echo "=== Статус 3proxy ==="
-  systemctl status "$SERVICE_NAME" --no-pager || true
-
   echo
-  echo "Конфиг:"
-  [[ -f "$CFG_PATH" ]] && cat "$CFG_PATH" || echo "Конфиг не найден."
+
+  systemctl status "$SERVICE_NAME" --no-pager || true
 
   echo
   echo "Слушающие порты:"
   ss -ltnp | grep 3proxy || true
+
+  echo
 }
 
 main_menu() {
   echo
-  echo "Выбери действие:"
-  echo "1) Установить / перенастроить 3proxy"
-  echo "2) Удалить 3proxy"
-  echo "3) Показать статус"
+  echo "===================================="
+  echo "3proxy Manager"
+  echo "===================================="
+  echo
+  echo "1) Установить / перенастроить"
+  echo "2) Удалить"
+  echo "3) Статус"
   echo "0) Выход"
   echo
 
-  read -rp "Действие: " action
+  read -rp "Выбор: " action
 
   case "$action" in
-    1) install_or_reconfigure ;;
-    2) remove_3proxy ;;
-    3) status_3proxy ;;
-    0) exit 0 ;;
-    *) echo "Неизвестное действие."; exit 1 ;;
+    1)
+      install_or_reconfigure
+      ;;
+    2)
+      remove_3proxy
+      ;;
+    3)
+      status_3proxy
+      ;;
+    0)
+      exit 0
+      ;;
+    *)
+      echo "Неизвестное действие."
+      exit 1
+      ;;
   esac
 }
 
